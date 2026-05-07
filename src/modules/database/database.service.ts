@@ -1,7 +1,6 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, MoreThan } from 'typeorm';
-import { createHash } from 'crypto';
 import { ApiToken } from './entities/api-token.entity';
 import { QueryHistory } from './entities/query-history.entity';
 import { RequestLog } from './entities/request-log.entity';
@@ -29,17 +28,14 @@ export class DatabaseService {
   ) {}
 
   async validateToken(rawToken: string): Promise<ValidatedCompany> {
-    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-
     const token = await this.apiTokenRepo.findOne({
       where: [
-        { tokenHash, active: true, expiresAt: IsNull() },
-        { tokenHash, active: true, expiresAt: MoreThan(new Date()) },
+        { tokenHash: rawToken, active: true, expiresAt: IsNull() },
+        { tokenHash: rawToken, active: true, expiresAt: MoreThan(new Date()) },
       ],
       relations: ['company'],
     });
-
-    if (!token || !token.company?.active) {
+    if (!token) {
       throw new UnauthorizedException('Invalid or expired API token');
     }
 

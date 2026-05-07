@@ -17,7 +17,9 @@ import { DatabaseService } from './database.service';
         url: config.get<string>('database.url'),
         ssl: { rejectUnauthorized: false },
         entities: [Company, ApiToken, QueryHistory, RequestLog],
-        synchronize: false, // schema managed externally — never auto-migrate
+        synchronize: false,
+        retryAttempts: 3,
+        retryDelay: 3000,
         logging: config.get<string>('nodeEnv') === 'development' ? ['error', 'warn'] : ['error'],
       }),
       inject: [ConfigService],

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Open Finance — Test Client</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; padding: 32px; }
+    h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 24px; color: #fff; letter-spacing: -0.3px; }
+    h2 { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-bottom: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: #1e2130; border: 1px solid #2d3148; border-radius: 10px; padding: 20px; }
+    label { display: block; font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; margin-top: 12px; }
+    label:first-of-type { margin-top: 0; }
+    input, select { width: 100%; padding: 8px 10px; background: #0f1117; border: 1px solid #2d3148; border-radius: 6px; color: #e2e8f0; font-size: 0.85rem; outline: none; }
+    input:focus, select:focus { border-color: #6366f1; }
+    button { margin-top: 14px; width: 100%; padding: 9px; background: #6366f1; color: #fff; border: none; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+    button:hover { background: #4f46e5; }
+    button:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
+    .config-card { background: #1e2130; border: 1px solid #2d3148; border-radius: 10px; padding: 20px; margin-bottom: 24px; }
+    .config-card .row { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }
+    .response-box { background: #1e2130; border: 1px solid #2d3148; border-radius: 10px; padding: 20px; }
+    .response-box h2 { margin-bottom: 12px; }
+    .log-entry { margin-bottom: 12px; border-bottom: 1px solid #2d3148; padding-bottom: 12px; }
+    .log-entry:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+    .log-entry .meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .log-entry .tag { font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+    .tag.ok { background: #064e3b; color: #6ee7b7; }
+    .tag.err { background: #7f1d1d; color: #fca5a5; }
+    .log-entry .route { font-size: 0.78rem; color: #94a3b8; }
+    .log-entry .time { font-size: 0.72rem; color: #475569; }
+    pre { background: #0f1117; border: 1px solid #1e2130; border-radius: 6px; padding: 12px; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: #a5b4fc; max-height: 300px; overflow-y: auto; }
+    .empty { color: #475569; font-size: 0.82rem; text-align: center; padding: 24px 0; }
+    .copy-btn { margin-top: 6px; width: auto; padding: 4px 12px; font-size: 0.72rem; background: #334155; }
+    .copy-btn:hover { background: #475569; }
+    .badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 2px 7px; border-radius: 4px; margin-left: 6px; }
+    .badge-get { background: #1e3a5f; color: #93c5fd; }
+    .badge-post { background: #1a3322; color: #6ee7b7; }
+  </style>
+</head>
+<body>
+
+<h1>Open Finance — Test Client</h1>
+
+<div class="config-card">
+  <h2>Configuração</h2>
+  <div class="row">
+    <div>
+      <label>API Base URL</label>
+      <input id="baseUrl" value="http://localhost:3000/api/v1" />
+    </div>
+    <div>
+      <label>Bearer Token</label>
+      <input id="token" placeholder="Seu token de autenticação" />
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- Iniciar Conexão -->
+  <div class="card">
+    <h2>Iniciar Conexão <span class="badge badge-post">POST</span></h2>
+    <label>CNPJ (14 dígitos)</label>
+    <input id="cnpj" value="12345678000195" maxlength="14" />
+    <button onclick="iniciarConexao()">Iniciar Conexão</button>
+  </div>
+
+  <!-- Ver Status -->
+  <div class="card">
+    <h2>Ver Status <span class="badge badge-get">GET</span></h2>
+    <label>Connection ID</label>
+    <input id="connectionId" placeholder="MongoDB ObjectId" />
+    <button onclick="verStatus()">Ver Status</button>
+  </div>
+
+  <!-- Simular Webhook -->
+  <div class="card">
+    <h2>Simular Webhook Pluggy <span class="badge badge-post">POST</span></h2>
+    <label>Item ID (Pluggy)</label>
+    <input id="webhookItemId" placeholder="pluggy-item-id" />
+    <label>Evento</label>
+    <select id="webhookEvent">
+      <option value="item/updated">item/updated — autenticação OK</option>
+      <option value="item/created">item/created — item criado</option>
+      <option value="item/login_error">item/login_error — falha de login</option>
+      <option value="item/error">item/error — erro genérico</option>
+    </select>
+    <button onclick="simularWebhook()">Disparar Webhook</button>
+  </div>
+
+</div>
+
+<!-- Log de Respostas -->
+<div class="response-box">
+  <h2>Respostas</h2>
+  <div id="log"><div class="empty">Nenhuma requisição ainda</div></div>
+</div>
+
+<script>
+  const cfg = () => ({
+    base: document.getElementById('baseUrl').value.replace(/\/$/, ''),
+    token: document.getElementById('token').value.trim(),
+  });
+
+  function headers(withAuth = true) {
+    const h = { 'Content-Type': 'application/json' };
+    const t = cfg().token;
+    if (withAuth && t) h['Authorization'] = `Bearer ${t}`;
+    return h;
+  }
+
+  async function request(method, path, body, withAuth = true) {
+    const url = cfg().base + path;
+    const opts = { method, headers: headers(withAuth) };
+    if (body) opts.body = JSON.stringify(body);
+    const start = Date.now();
+    try {
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      logResponse(method, path, res.status, data, Date.now() - start);
+      return data;
+    } catch (err) {
+      logResponse(method, path, 0, { error: err.message }, Date.now() - start);
+    }
+  }
+
+  function logResponse(method, path, status, data, ms) {
+    const log = document.getElementById('log');
+    if (log.querySelector('.empty')) log.innerHTML = '';
+
+    const ok = status >= 200 && status < 300;
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    const id = 'pre-' + Date.now();
+    entry.innerHTML = `
+      <div class="meta">
+        <div>
+          <span class="tag ${ok ? 'ok' : 'err'}">${status || 'ERR'}</span>
+          <span class="route">${method} ${path}</span>
+        </div>
+        <span class="time">${ms}ms &nbsp; ${new Date().toLocaleTimeString()}</span>
+      </div>
+      <pre id="${id}">${JSON.stringify(data, null, 2)}</pre>
+      <button class="copy-btn" onclick="copy('${id}')">Copiar</button>
+    `;
+    log.prepend(entry);
+
+    if (data?.connectionId) {
+      document.getElementById('connectionId').value = data.connectionId;
+      document.getElementById('webhookItemId').value = data.connectionId;
+    }
+  }
+
+  function copy(id) {
+    const text = document.getElementById(id).textContent;
+    navigator.clipboard.writeText(text).then(() => alert('Copiado!'));
+  }
+
+  async function iniciarConexao() {
+    const cnpj = document.getElementById('cnpj').value.trim();
+    if (!cnpj) return alert('Informe o CNPJ');
+    await request('POST', '/connections', { cnpj });
+  }
+
+  async function verStatus() {
+    const id = document.getElementById('connectionId').value.trim();
+    if (!id) return alert('Informe o Connection ID');
+    await request('GET', `/connections/${id}/status`);
+  }
+
+  async function simularWebhook() {
+    const itemId = document.getElementById('webhookItemId').value.trim();
+    if (!itemId) return alert('Informe o Item ID');
+    const event = document.getElementById('webhookEvent').value;
+    await request('POST', '/webhooks/pluggy', {
+      event,
+      itemId,
+      ...(event === 'item/error' ? { error: { message: 'Simulated error' } } : {}),
+    }, false);
+  }
+</script>
+
+</body>
+</html>

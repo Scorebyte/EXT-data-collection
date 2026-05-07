@@ -28,11 +28,6 @@ import {
             name: QUEUE_COLLECTION,
             options: {
               durable: true,
-              arguments: {
-                'x-dead-letter-exchange': DLX,
-                'x-dead-letter-routing-key': ROUTING_KEYS.CONNECTION_ESTABLISHED,
-                'x-message-ttl': 86400000,
-              },
             },
             exchange: EXCHANGE,
             routingKey: ROUTING_KEYS.CONNECTION_ESTABLISHED,
@@ -41,11 +36,6 @@ import {
             name: QUEUE_EXT2CLEARING,
             options: {
               durable: true,
-              arguments: {
-                'x-dead-letter-exchange': DLX,
-                'x-dead-letter-routing-key': ROUTING_KEYS.TRANSACTION_READY,
-                'x-message-ttl': 86400000,
-              },
             },
             exchange: EXCHANGE,
             routingKey: ROUTING_KEYS.TRANSACTION_READY,

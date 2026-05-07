@@ -15,6 +15,7 @@ export default () => ({
     clientSecret: process.env.PLUGGY_CLIENT_SECRET ?? '',
     webhookSecret: process.env.PLUGGY_WEBHOOK_SECRET ?? '',
     connectBaseUrl: 'https://connect.pluggy.ai',
+    mock: process.env.PLUGGY_MOCK === 'true',
   },
 
   externalSystem: {

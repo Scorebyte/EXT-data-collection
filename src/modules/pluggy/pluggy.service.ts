@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PluggyClient } from 'pluggy-sdk';
 import type { Item, Account, Transaction } from 'pluggy-sdk';
 import { withRetry } from '../../common/utils/retry.util';
+import { MOCK_ITEM, MOCK_ACCOUNTS, MOCK_TRANSACTIONS } from './mock/pluggy-mock.data';
 
 export type { Item as PluggyItem, Account as PluggyAccount, Transaction as PluggyTransaction };
 
@@ -10,10 +11,17 @@ export type { Item as PluggyItem, Account as PluggyAccount, Transaction as Plugg
 export class PluggyService implements OnModuleInit {
   private readonly logger = new Logger(PluggyService.name);
   private client!: PluggyClient;
+  private readonly mock: boolean;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService) {
+    this.mock = config.get<boolean>('pluggy.mock') ?? false;
+  }
 
   onModuleInit() {
+    if (this.mock) {
+      this.logger.warn('Pluggy running in MOCK mode — no real API calls will be made');
+      return;
+    }
     this.client = new PluggyClient({
       clientId: this.config.get<string>('pluggy.clientId') ?? '',
       clientSecret: this.config.get<string>('pluggy.clientSecret') ?? '',
@@ -22,6 +30,7 @@ export class PluggyService implements OnModuleInit {
   }
 
   async createConnectToken(clientUserId: string): Promise<{ accessToken: string }> {
+    if (this.mock) return { accessToken: `mock-token-${clientUserId}` };
     return withRetry(
       () => this.client.createConnectToken(undefined, { clientUserId }),
       { attempts: 3, delayMs: 1000, label: 'createConnectToken' },
@@ -29,11 +38,13 @@ export class PluggyService implements OnModuleInit {
   }
 
   buildConnectUrl(accessToken: string): string {
+    if (this.mock) return `http://localhost:3000/mock-connect?token=${accessToken}`;
     const base = this.config.get<string>('pluggy.connectBaseUrl') ?? 'https://connect.pluggy.ai';
     return `${base}?token=${accessToken}`;
   }
 
   async fetchItem(itemId: string): Promise<Item> {
+    if (this.mock) return { ...MOCK_ITEM, id: itemId };
     return withRetry(
       () => this.client.fetchItem(itemId),
       { attempts: 3, delayMs: 1000, label: `fetchItem:${itemId}` },
@@ -41,6 +52,7 @@ export class PluggyService implements OnModuleInit {
   }
 
   async fetchAccounts(itemId: string): Promise<Account[]> {
+    if (this.mock) return MOCK_ACCOUNTS;
     const result = await withRetry(
       () => this.client.fetchAccounts(itemId),
       { attempts: 3, delayMs: 1000, label: `fetchAccounts:${itemId}` },
@@ -49,11 +61,13 @@ export class PluggyService implements OnModuleInit {
   }
 
   async fetchAllTransactions(accountId: string, from?: string): Promise<Transaction[]> {
+    if (this.mock) {
+      return MOCK_TRANSACTIONS.filter(t => t.accountId === accountId);
+    }
     this.logger.debug(`Fetching all transactions for account ${accountId}`);
     try {
       const result = await withRetry(
-        () =>
-          this.client.fetchAllTransactions(accountId, from ? { dateFrom: from } : undefined),
+        () => this.client.fetchAllTransactions(accountId, from ? { dateFrom: from } : undefined),
         { attempts: 3, delayMs: 1500, label: `fetchAllTransactions:${accountId}` },
       );
       this.logger.debug(`Fetched ${result.length} transactions for account ${accountId}`);

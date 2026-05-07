@@ -7,15 +7,15 @@
 
 ## O que é este projeto
 
-Backend orquestrador de fluxo para Open Finance. Recebe um CNPJ, gera um link de autorização via Pluggy, aguarda o usuário autenticar na instituição financeira, coleta os dados (contas + transações), normaliza e envia para um sistema externo de processamento.
+Backend orquestrador de fluxo para Open Finance. Recebe um CNPJ, gera um link de autorização via Pluggy, aguarda o usuário autenticar na instituição financeira, coleta os dados brutos (contas + transações), salva no MongoDB dentro de um envelope padronizado e publica apenas uma referência (`transactionId`) para o microserviço de clearing consumir.
 
 **O que ele NÃO é:**
 - Não é um banco de dados permanente de dados financeiros
-- Não faz análise ou cálculos sobre os dados
-- Não tem responsabilidade sobre o sistema externo de destino
+- Não faz normalização, análise ou cálculos sobre os dados
+- Não tem responsabilidade sobre o que acontece após a publicação para o clearing
 
-**Fonte de verdade dos dados:** Pluggy (pode ser recolhido a qualquer momento)
-**MongoDB:** estado transitório apenas — pode ser dropado sem impacto estrutural
+**Fonte de dados:** Pluggy SDK (temporário — será substituído pela API Open Finance diretamente)
+**MongoDB:** estado transitório + envelope raw — o clearing lê e normaliza
 
 ---
 
@@ -23,13 +23,14 @@ Backend orquestrador de fluxo para Open Finance. Recebe um CNPJ, gera um link de
 
 | Banco | Uso | Quando gravar |
 |---|---|---|
-| **MongoDB** (local) | Estado transitório do fluxo | Sempre — é a fonte de verdade de status do pipeline |
-| **PostgreSQL / Supabase** | Histórico de queries, logs de request, validação de tokens | Apenas nos status-chave: `created`, `auth`, `notauth`, `error` |
+| **MongoDB Atlas** | Estado do fluxo + envelope raw do Pluggy | Sempre — fonte de verdade do pipeline |
+| **PostgreSQL / Supabase** | Histórico LGPD, logs de request, validação de tokens | Apenas nos status-chave: `created`, `auth`, `notauth`, `error` |
 
-**MongoDB collections:** `connections`, `envelopes`, `webhook_subscriptions`
+**MongoDB:** cluster `credit-analysis-cluster`, database `credit_analysis_engine`
+**Collections:** `connections`, `normalized_transactions`
 **PostgreSQL tables (via TypeORM):** `companies`, `api_tokens`, `query_history`, `request_logs`
 
-Conexão PostgreSQL configurada via `DATABASE_URL`. Atualmente aponta para Supabase, mas pode ser trocada para qualquer PostgreSQL sem alterar código — só mudar a env var. `synchronize: false` garante que o TypeORM nunca toca no schema.
+Conexão PostgreSQL via `DATABASE_URL`. Pode ser trocada para qualquer PostgreSQL sem alterar código — só mudar a env var. `synchronize: false` garante que o TypeORM nunca toca no schema.
 
 ---
 
@@ -38,19 +39,19 @@ Conexão PostgreSQL configurada via `DATABASE_URL`. Atualmente aponta para Supab
 | Tecnologia | Versão | Motivo da escolha |
 |---|---|---|
 | Node.js | ≥20 | LTS atual |
-| NestJS | ^10.3.0 | Framework modular com injeção de dependência, decorators para consumers |
+| NestJS | ^10.3.0 | Framework modular com DI e decorators para consumers |
 | TypeScript | ^5.4.5 | Tipagem estrita |
-| RabbitMQ | 3.13 (docker) | Mensageria durável, suporte a DLX, prefetch por consumer |
-| MongoDB | 7 (docker) | Armazenamento de estado transitório sem schema rígido |
+| RabbitMQ | CloudAMQP (cloud) | Mensageria durável, suporte a DLX, prefetch por consumer |
+| MongoDB | Atlas (cloud) | Armazenamento de estado transitório sem schema rígido |
 | Mongoose | ^8.4.0 | ODM para MongoDB com NestJS |
 | @golevelup/nestjs-rabbitmq | ^4.0.0 | Melhor DX para RabbitMQ no NestJS — decorators `@RabbitSubscribe` |
 | pluggy-sdk | ^0.85.2 | SDK oficial da Pluggy (versão mais recente disponível no npm) |
 | @nestjs/typeorm + typeorm | ^11 / ^0.3 | ORM agnóstico de banco — conexão com PostgreSQL |
 | pg | ^8.20.0 | Driver PostgreSQL (usado pelo TypeORM) |
-| axios | ^1.7.2 | HTTP client para dispatch externo |
+| axios | ^1.7.2 | HTTP client para chamadas externas |
 | reflect-metadata | ^0.1.14 | Exigido pelo @golevelup/nestjs-rabbitmq (peer dep — não usar ^0.2.x) |
 
-**Atenção:** pluggy-sdk não tem versão 1.x no npm. A versão real é 0.85.2. Não alterar.
+> **Atenção:** pluggy-sdk não tem versão 1.x no npm. A versão real é 0.85.2. Não alterar.
 
 ---
 
@@ -62,7 +63,7 @@ Cliente
   │ POST /api/v1/connections { cnpj }
   ▼
 ConnectionController
-  │ → cria Connection{status: pending_auth} no MongoDB
+  │ → cria Connection { status: created } no MongoDB
   │ → PluggyService.createConnectToken(clientUserId)
   │ → retorna { connectionId, connectUrl }
   ▼
@@ -77,9 +78,9 @@ POST /api/v1/webhooks/pluggy
   │     → polling item até status = UPDATED (máx 8 tentativas, 3s cada)
   │     → connection.pluggyItemId = itemId
   │     → connection.status = connected
-  │     → publica: open_finance / connection.established
+  │     → publica: exchange 'data-collection' / routing key 'connection.established'
   ▼
-[RabbitMQ: q.open_finance.collection]
+[RabbitMQ: fila 'q.data-collection']
   │
 CollectionConsumer.onConnectionEstablished()
   │ → connection.status = collecting
@@ -87,13 +88,15 @@ CollectionConsumer.onConnectionEstablished()
   │ → para cada conta: PluggyService.fetchAllTransactions(accountId)
   │     → usa fetchAllTransactions() do SDK (cursor-based)
   │     → fallback para page-based (pageSize=500) se falhar
-  │ → EnvelopeService.create() — salva no MongoDB com envelope padronizado:
-  │     { event, lastUpdate, status: PENDING, domainName, body: { accounts, transactions, ... }, error }
+  │ → EnvelopeService.create() — salva no MongoDB (normalized_transactions):
+  │     { event, lastUpdate, status: PENDING, domainName: 'data-collection',
+  │       body: { connectionId, cnpj, pluggyItemId, collectedAt, accounts, transactions },
+  │       error: null }
   │ → connection.status = collected
-  │ → publica: open_finance.clearing / transaction.ready
-  │     payload: { transactionId, connectionId, cnpj }  ← apenas referência, SEM payload
+  │ → publica: exchange 'data-collection' / routing key 'transaction.ready'
+  │     payload: { transactionId, connectionId, cnpj }  ← apenas referência, SEM payload raw
   ▼
-[RabbitMQ: queue_ext2clear]  ← consumido pelo microserviço de CLEARING
+[RabbitMQ: fila 'ext2clearing']  ← consumido pelo microserviço de CLEARING
   │
   │  O clearing lê o envelope do MongoDB pelo transactionId,
   │  normaliza, persiste no clearing-db e alimenta o pipeline de ML.
@@ -105,7 +108,7 @@ CollectionConsumer.onConnectionEstablished()
 ## Status de uma Connection (máquina de estados)
 
 ```
-created ──→ connected → collecting → collected → normalizing → normalized → dispatching → dispatched
+created ──→ connected → collecting → collected
    │
    └──→ not_auth   (login falhou na instituição financeira)
    │
@@ -117,18 +120,15 @@ created ──→ connected → collecting → collected → normalizing → nor
 | `created` | `ConnectionService.initiate()` | Link gerado, aguardando autenticação do usuário |
 | `not_auth` | `WebhookService` (evento `item/login_error` ou status `LOGIN_ERROR`) | Usuário falhou na autenticação junto à instituição |
 | `connected` | `WebhookService` (item `UPDATED`) | Autenticação OK, pronto para coletar |
-| `collecting` | `CollectionConsumer` | Buscando contas e transações na Pluggy |
+| `collecting` | `CollectionConsumer` | Buscando contas e transações no Pluggy |
 | `collected` | `CollectionConsumer` | Dados brutos salvos no MongoDB |
-| `normalizing` | `NormalizationConsumer` | Padronizando campos e formatos |
-| `normalized` | `NormalizationConsumer` | Dados prontos para envio |
-| `dispatching` | `DispatchConsumer` | Enviando para sistema externo |
-| `dispatched` | `DispatchConsumer` | Envio confirmado pelo externo |
 | `error` | qualquer worker | Falha técnica irrecuperável |
 
 Todas as transições passam por `ConnectionService.transition()` que:
 1. Atualiza o campo `status`
 2. Faz push em `statusHistory[]` (log imutável de todas as transições)
 3. Aceita `extra` para salvar campos adicionais na mesma operação
+4. Sincroniza `query_history` no PostgreSQL para os status mapeados: `created`, `auth`, `notauth`, `error`
 
 ---
 
@@ -136,12 +136,13 @@ Todas as transições passam por `ConnectionService.transition()` que:
 
 ```
 startup/
-├── docker-compose.yml          → MongoDB 7 + RabbitMQ 3.13-management
+├── .env                        → variáveis reais (gitignored)
 ├── .env.example                → todas as variáveis documentadas
+├── .gitignore
 ├── package.json
 ├── tsconfig.json
 ├── nest-cli.json
-├── CONTEXT.md                  → este arquivo
+├── readme.md                   → este arquivo
 └── src/
     ├── main.ts                 → bootstrap, ValidationPipe global, GlobalExceptionFilter, prefixo /api/v1
     ├── app.module.ts           → importa todos os módulos
@@ -150,14 +151,18 @@ startup/
     ├── common/
     │   ├── filters/
     │   │   └── http-exception.filter.ts  → captura qualquer exceção, resposta padronizada
+    │   ├── guards/
+    │   │   └── api-token.guard.ts        → valida Bearer token via SHA-256 + PostgreSQL
+    │   ├── interceptors/
+    │   │   └── request-log.interceptor.ts → loga requests no PostgreSQL
     │   ├── types/
-    │   │   └── queue-messages.types.ts   → interfaces de todas as mensagens de fila + enum ClientNotificationEvent
+    │   │   └── queue-messages.types.ts   → interfaces das mensagens de fila
     │   └── utils/
-    │       └── retry.util.ts             → withRetry(), sleep(), classe Semaphore
+    │       └── retry.util.ts             → withRetry(), sleep()
     └── modules/
         ├── messaging/
-        │   ├── queues.constants.ts       → nomes de exchanges, queues, DLQs, routing keys (fonte única)
-        │   └── messaging.module.ts       → configura RabbitMQModule, declara exchanges/queues/DLX
+        │   ├── queues.constants.ts       → nomes de exchanges, filas, DLQs, routing keys (fonte única)
+        │   └── messaging.module.ts       → configura RabbitMQModule, declara exchanges/filas/DLX
         ├── pluggy/
         │   ├── pluggy.service.ts         → wrapper do SDK: createConnectToken, fetchItem, fetchAccounts, fetchAllTransactions
         │   └── pluggy.module.ts
@@ -173,21 +178,21 @@ startup/
         │   ├── webhook.controller.ts            → POST /webhooks/pluggy (valida assinatura HMAC)
         │   └── webhook.module.ts
         ├── collection/
-        │   ├── collection.service.ts   → collect(): busca contas+transações na Pluggy, retorna payload bruto
-        │   ├── collection.consumer.ts  → @RabbitSubscribe connection.established, publica payload completo
+        │   ├── collection.service.ts   → collect(): busca contas+transações no Pluggy
+        │   ├── collection.consumer.ts  → @RabbitSubscribe connection.established → salva envelope → publica transaction.ready
         │   └── collection.module.ts
-        │   (normalização é responsabilidade de módulo EXTERNO que consome data.collected)
-        ├── dispatch/
-        │   ├── dispatch.service.ts    → send(connectionId, cnpj, data) com Semaphore + withRetry
-        │   ├── dispatch.consumer.ts   → @RabbitSubscribe data.normalized, usa data da mensagem diretamente
-        │   └── dispatch.module.ts
-        └── notification/
-            ├── schemas/webhook-subscription.schema.ts → WebhookSubscription (cnpj, url, events[])
-            ├── dto/register-webhook.dto.ts
-            ├── notification.service.ts    → registerSubscription(), dispatch()
-            ├── notification.consumer.ts   → @RabbitSubscribe dispatch.completed
-            ├── notification.controller.ts → POST /webhooks/subscriptions
-            └── notification.module.ts
+        ├── envelope/
+        │   ├── schemas/envelope.schema.ts  → Envelope, EnvelopeStatus, EnvelopeEvent
+        │   ├── envelope.service.ts         → create(), markError()
+        │   └── envelope.module.ts
+        └── database/
+            ├── entities/
+            │   ├── company.entity.ts          → public.companies
+            │   ├── api-token.entity.ts        → public.api_tokens
+            │   ├── query-history.entity.ts    → public.query_history
+            │   └── request-log.entity.ts      → public.request_logs
+            ├── database.service.ts            → validateToken(), writeQueryHistory(), logRequest()
+            └── database.module.ts             → TypeORM global, synchronize: false
 ```
 
 ---
@@ -195,46 +200,72 @@ startup/
 ## RabbitMQ — exchanges e filas
 
 ### Exchanges
+
 | Nome | Tipo | Uso |
 |---|---|---|
-| `open_finance` | topic | exchange principal, todas as mensagens |
-| `open_finance.dlx` | topic | dead-letter exchange |
+| `data-collection` | topic | exchange principal |
+| `data-collection.dlx` | topic | dead-letter exchange |
 
 ### Routing keys
+
 | Constante | Valor | Publicado por |
 |---|---|---|
-| `CONNECTION_ESTABLISHED` | `connection.established` | WebhookService |
-| `DATA_COLLECTED` | `data.collected` | CollectionConsumer |
-| `DATA_NORMALIZED` | `data.normalized` | NormalizationConsumer |
-| `DISPATCH_COMPLETED` | `dispatch.completed` | DispatchConsumer |
-| `CLIENT_NOTIFICATION` | `notification.client` | (reservado) |
+| `CONNECTION_ESTABLISHED` | `connection.established` | `WebhookService` |
+| `TRANSACTION_READY` | `transaction.ready` | `CollectionConsumer` |
 
-### Filas principais (todas durable, com DLX e TTL 24h)
-| Fila | Consome | DLQ |
-|---|---|---|
-| `q.open_finance.collection` | `connection.established` | `dlq.open_finance.collection` |
-| `q.open_finance.normalization` | `data.collected` | `dlq.open_finance.normalization` |
-| `q.open_finance.dispatch` | `data.normalized` | `dlq.open_finance.dispatch` |
-| `q.open_finance.notification` | `dispatch.completed` | `dlq.open_finance.notification` |
+### Filas
+
+| Fila | Routing key | Consumer | DLQ |
+|---|---|---|---|
+| `q.data-collection` | `connection.established` | `CollectionConsumer` | `dlq.data-collection` |
+| `ext2clearing` | `transaction.ready` | microserviço de clearing (externo) | — |
 
 ### Channels configurados
-- `default`: prefetchCount=10 (collection, normalization, notification)
-- `dispatch`: prefetchCount=3 (alinhado com DISPATCH_CONCURRENCY)
+- `default`: prefetchCount=10
 
 ---
 
 ## MongoDB — collections
 
-| Collection | Schema | Propósito |
-|---|---|---|
-| `connections` | `Connection` | Estado de cada fluxo (status, IDs, histórico) |
-| `webhook_subscriptions` | `WebhookSubscription` | URLs de clientes para notificação |
+### `connections`
 
-**Dados financeiros não são persistidos no MongoDB.** O payload bruto da Pluggy trafega inteiro pelo RabbitMQ. O módulo externo que normaliza também publica os dados normalizados na mensagem, não em banco.
+Estado e histórico de cada fluxo. Campos relevantes: `cnpj`, `companyId`, `clientUserId`, `pluggyItemId`, `status`, `statusHistory[]`, `connectUrl`, `connectToken`, `lastError`.
 
-**Índices relevantes:**
-- `connections`: `cnpj + status` (busca de conexão ativa), `clientUserId` (correlação webhook), `pluggyItemId` (erro event)
-- Todas as collections têm `timestamps: true` (createdAt/updatedAt automáticos)
+**Índices:** `cnpj + status` (busca de conexão ativa), `clientUserId` (correlação webhook), `pluggyItemId` (erro event)
+
+### `normalized_transactions`
+
+Envelope padronizado com os dados brutos do Pluggy.
+
+```json
+{
+  "createdAt":  "2026-05-07T00:00:00.000Z",
+  "event":      "OPEN_FINANCE_DATA_COLLECTED",
+  "lastUpdate": "2026-05-07T00:00:00.000Z",
+  "status":     "PENDING",
+  "domainName": "data-collection",
+  "body": {
+    "connectionId": "...",
+    "cnpj":         "12345678000195",
+    "pluggyItemId": "...",
+    "collectedAt":  "2026-05-07T00:00:00.000Z",
+    "accounts":     [...],
+    "transactions": [...]
+  },
+  "error": null
+}
+```
+
+---
+
+## PostgreSQL — tabelas
+
+| Tabela | Propósito |
+|---|---|
+| `companies` | Empresas clientes da API |
+| `api_tokens` | Tokens de autenticação (armazenados como hash SHA-256) |
+| `query_history` | Histórico de eventos LGPD por CNPJ: `created`, `auth`, `notauth`, `error` |
+| `request_logs` | Log de todas as requisições HTTP com status code |
 
 ---
 
@@ -243,23 +274,31 @@ startup/
 ```bash
 PORT=3000
 NODE_ENV=development
-MONGODB_URI=mongodb://localhost:27017/open-finance
-RABBITMQ_URI=amqp://guest:guest@localhost:5672
-PLUGGY_CLIENT_ID=           # credencial Pluggy
-PLUGGY_CLIENT_SECRET=       # credencial Pluggy
+
+# MongoDB Atlas
+MONGODB_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/credit_analysis_engine?appName=<cluster>
+
+# RabbitMQ (CloudAMQP)
+RABBITMQ_URI=amqps://<user>:<pass>@<host>/<vhost>
+
+# PostgreSQL (Supabase ou qualquer PostgreSQL)
+DATABASE_URL=postgresql://postgres:<pass>@db.<id>.supabase.co:5432/postgres
+
+# Pluggy
+PLUGGY_CLIENT_ID=
+PLUGGY_CLIENT_SECRET=
 PLUGGY_WEBHOOK_SECRET=      # secret para validar HMAC-SHA256 dos webhooks
-EXTERNAL_SYSTEM_URL=        # endpoint POST do sistema externo
-EXTERNAL_SYSTEM_API_KEY=    # auth do sistema externo (Bearer token)
-DISPATCH_CONCURRENCY=3      # max requisições simultâneas para o externo
-RETRY_ATTEMPTS=3            # tentativas em falhas transitórias
-RETRY_DELAY_MS=2000         # delay base do backoff exponencial
+
+# Resiliência
+RETRY_ATTEMPTS=3
+RETRY_DELAY_MS=2000
 ```
 
 ---
 
 ## Padrões e convenções adotadas
 
-### Pattern de resilência em todo worker
+### Pattern de resiliência em todo worker
 ```typescript
 try {
   // processamento
@@ -276,9 +315,6 @@ tentativa 2: falha → espera 4s
 tentativa 3: falha → lança erro
 ```
 
-### Semaphore — controle de concorrência
-Usado exclusivamente no DispatchService. Instanciado no `onModuleInit()` com valor de `DISPATCH_CONCURRENCY`.
-
 ### Webhook HMAC
 - Header esperado: `x-pluggy-signature`
 - Algoritmo: HMAC-SHA256 do body JSON
@@ -290,10 +326,13 @@ Formato: `{cnpj}-{uuid}` — gerado na iniciação da conexão. É a chave que c
 
 ### Nomenclatura de arquivos
 - `*.schema.ts` — Mongoose schema + tipo `HydratedDocument`
-- `*.consumer.ts` — classe que contém `@RabbitSubscribe`
-- `*.service.ts` — lógica de negócio, acessa MongoDB e outros services
+- `*.consumer.ts` — classe com `@RabbitSubscribe`
+- `*.service.ts` — lógica de negócio
 - `*.controller.ts` — HTTP endpoints
 - `*.module.ts` — importações e exports do módulo
+
+### Validação de token
+Todo endpoint (exceto webhooks) requer `Authorization: Bearer <token>`. O guard calcula SHA-256 do token e consulta `api_tokens` JOIN `companies` no PostgreSQL. O `companyId` resultante é anexado ao request para uso nos controllers.
 
 ---
 
@@ -301,17 +340,17 @@ Formato: `{cnpj}-{uuid}` — gerado na iniciação da conexão. É a chave que c
 
 Base: `http://localhost:3000/api/v1`
 
-| Método | Path | Descrição |
-|---|---|---|
-| POST | `/connections` | Inicia fluxo com CNPJ, retorna connectUrl |
-| GET | `/connections/:id/status` | Consulta status atual e histórico |
-| POST | `/webhooks/pluggy` | Recebe eventos da Pluggy (webhook) |
-| POST | `/webhooks/subscriptions` | Registra URL para notificações do cliente |
+| Método | Path | Auth | Descrição |
+|---|---|---|---|
+| POST | `/connections` | Bearer | Inicia fluxo com CNPJ, retorna connectUrl |
+| GET | `/connections/:id/status` | Bearer | Consulta status atual e histórico |
+| POST | `/webhooks/pluggy` | HMAC | Recebe eventos da Pluggy (webhook) |
 
 ### Exemplo de uso completo
 ```bash
 # 1. Iniciar conexão
 curl -X POST http://localhost:3000/api/v1/connections \
+  -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"cnpj": "12345678000195"}'
 # → { connectionId, connectUrl }
@@ -321,66 +360,19 @@ curl -X POST http://localhost:3000/api/v1/connections \
 # 3. Pluggy bate no webhook automaticamente após autenticação
 
 # 4. Acompanhar progresso
-curl http://localhost:3000/api/v1/connections/{connectionId}/status
-# → { status: "collected", history: ["pending_auth","connected","collecting","collected"] }
-
-# 5. Registrar webhook para receber notificação de conclusão
-curl -X POST http://localhost:3000/api/v1/webhooks/subscriptions \
-  -H "Content-Type: application/json" \
-  -d '{"cnpj": "12345678000195", "url": "https://meu-sistema.com/hook", "events": ["dispatch.completed"]}'
+curl http://localhost:3000/api/v1/connections/{connectionId}/status \
+  -H "Authorization: Bearer <token>"
+# → { status: "collected", history: ["created","connected","collecting","collected"] }
 ```
 
 ---
 
-## Payload enviado ao sistema externo
-
-```json
-{
-  "source": "open-finance-orchestrator",
-  "version": "1",
-  "cnpj": "12345678000195",
-  "connectionId": "mongo-object-id",
-  "collectedAt": "2026-05-05T00:00:00.000Z",
-  "accounts": [
-    {
-      "id": "pluggy-account-id",
-      "type": "BANK",
-      "subtype": "CHECKING_ACCOUNT",
-      "name": "Conta Corrente",
-      "balance": 1500.00,
-      "currency": "BRL",
-      "number": "12345-6"
-    }
-  ],
-  "transactions": [
-    {
-      "id": "pluggy-txn-id",
-      "accountId": "pluggy-account-id",
-      "description": "PIX RECEBIDO",
-      "amount": 500.00,
-      "type": "CREDIT",
-      "date": "2026-05-01",
-      "currency": "BRL"
-    }
-  ],
-  "summary": {
-    "totalAccounts": 1,
-    "totalTransactions": 42
-  }
-}
-```
-
----
-
-## Como rodar localmente
+## Como rodar
 
 ```bash
-# Subir infraestrutura
-docker-compose up -d
-
 # Configurar variáveis
 cp .env.example .env
-# editar .env com credenciais reais da Pluggy
+# preencher com credenciais reais (Pluggy, CloudAMQP, MongoDB Atlas, Supabase)
 
 # Instalar dependências
 npm install
@@ -393,7 +385,7 @@ npm run build
 npm run start:prod
 ```
 
-**RabbitMQ Management UI:** http://localhost:15672 (guest/guest)
+Não é necessário docker — MongoDB, RabbitMQ e PostgreSQL estão todos na nuvem.
 
 ---
 

@@ -5,7 +5,7 @@ import { CollectionService } from './collection.service';
 import { ConnectionService } from '../connection/connection.service';
 import { EnvelopeService } from '../envelope/envelope.service';
 import { ConnectionStatus } from '../connection/schemas/connection.schema';
-import { EXCHANGE, QUEUE_COLLECTION, DLX, ROUTING_KEYS } from '../messaging/queues.constants';
+import { EXCHANGE, QUEUE_COLLECTION, ROUTING_KEYS } from '../messaging/queues.constants';
 import { ConnectionEstablishedMessage, TransactionReadyMessage } from '../../common/types/queue-messages.types';
 
 @Injectable()
@@ -23,10 +23,6 @@ export class CollectionConsumer {
     exchange: EXCHANGE,
     routingKey: ROUTING_KEYS.CONNECTION_ESTABLISHED,
     queue: QUEUE_COLLECTION,
-    queueOptions: {
-      durable: true,
-      arguments: { 'x-dead-letter-exchange': DLX },
-    },
   })
   async onConnectionEstablished(msg: ConnectionEstablishedMessage): Promise<void | Nack> {
     const { connectionId, pluggyItemId, cnpj } = msg;

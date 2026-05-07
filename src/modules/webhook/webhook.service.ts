@@ -49,9 +49,12 @@ export class WebhookService {
     if (!item) return;
 
     const clientUserId = item.clientUserId ?? '';
-    const connection = await this.connectionService.findByClientUserId(clientUserId);
+    const connection =
+      (await this.connectionService.findByClientUserId(clientUserId)) ??
+      (await this.connectionService.findById(itemId).catch(() => null));
+
     if (!connection) {
-      this.logger.warn(`No connection found for clientUserId=${clientUserId}`);
+      this.logger.warn(`No connection found for clientUserId=${clientUserId} itemId=${itemId}`);
       return;
     }
 

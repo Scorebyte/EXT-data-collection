@@ -5,9 +5,7 @@ import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
-    bufferLogs: true,
-  });
+  const app = await NestFactory.create(AppModule);
 
   const config = app.get(ConfigService);
   const port = config.get<number>('port') ?? 3000;
@@ -23,6 +21,7 @@ async function bootstrap() {
     }),
   );
 
+  app.enableCors();
   app.setGlobalPrefix('api/v1');
 
   await app.listen(port);
