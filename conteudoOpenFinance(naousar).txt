@@ -1,0 +1,47 @@
+{
+    id: '7cae6748-d319-465b-9add-233b1ec62107',
+    description: 'PIX TRANSF Laura C18/03',
+    descriptionRaw: 'PIX TRANSF Laura C18/03',
+    currencyCode: 'BRL',
+    amount: 19,
+    amountInAccountCurrency: null,
+    date: 2026-03-18T13:54:05.047Z,
+    category: 'Transfer - PIX',
+    categoryId: '05070000',
+    balance: null,
+    accountId: '0b43dee4-39a5-4e8a-93b1-e9b508c63364',
+    providerCode: null,
+    status: 'POSTED',
+    paymentData: {
+      payer: {
+        accountNumber: null,
+        branchNumber: null,
+        documentNumber: { type: 'CPF', value: '524.547.778-51' },
+        name: null,
+        routingNumber: null,
+        routingNumberISPB: null
+      },
+      paymentMethod: 'PIX',
+      reason: null,
+      receiver: {
+        accountNumber: null,
+        branchNumber: null,
+        documentNumber: { type: 'CPF', value: '528.291.578-26' },
+        name: null,
+        routingNumber: null,
+        routingNumberISPB: null
+      },
+      receiverReferenceId: null,
+      referenceNumber: null,
+      boletoMetadata: null
+    },
+    type: 'CREDIT',
+    operationType: 'PIX',
+    creditCardMetadata: null,
+    acquirerData: null,
+    merchant: null,
+    providerId: null,
+    order: 2,
+    createdAt: 2026-03-26T18:55:01.548Z,
+    updatedAt: 2026-03-26T18:55:01.548Z
+  },
